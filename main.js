@@ -2,8 +2,8 @@
 
 // --- Supabase Configuration ---
 const { createClient } = window.supabase
-const SUPABASE_URL = 'https://bxzjuozfuagrncknbrge.supabase.co'
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4emp1b3pmdWFncm5ja25icmdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkzNzg4NjIsImV4cCI6MjA4NDk1NDg2Mn0.suJMxDEhCk8k4DJ7SCRKWfiB9gjwvN743buOxXXvCag'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 // --- State Management ---
@@ -745,39 +745,86 @@ window.setSettlementMonth = (m) => { state.settlementMonth = parseInt(m); render
 window.copySettlementReport = (month) => {
   const m = month || state.settlementMonth;
   const currentYear = 2026;
+  const weekdays = ['일', '월', '화', '수', '목', '금', '토'];
+
+  // Current month date boundaries
   const monthStr = `${currentYear}-${String(m).padStart(2, '0')}`;
+  const nextMonth = m === 12 ? 1 : m + 1;
+  const nextYear = m === 12 ? currentYear + 1 : currentYear;
+  const nextMonthStr = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
 
-  const monthlyTxs = state.transactions.filter(t => t.date.startsWith(monthStr));
-  const monthlyMembers = state.members.filter(mem => mem.date.startsWith(monthStr));
+  // 1. Budget Transactions for the month
+  const budgetTxs = state.transactions
+    .filter(t => t.date.startsWith(monthStr) && t.source === 'budget')
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-  const incomeFee = monthlyMembers.filter(mem => mem.type === 'fee').reduce((s, mem) => s + mem.amount, 0);
-  const incomeDonation = monthlyMembers.filter(mem => mem.type === 'donation').reduce((s, mem) => s + mem.amount, 0);
-  const expenseBudget = monthlyTxs.filter(t => t.source === 'budget').reduce((s, t) => s + t.amount, 0);
-  const expenseFee = monthlyTxs.filter(t => t.source === 'fee').reduce((s, t) => s + t.amount, 0);
-  const expenseDonation = monthlyTxs.filter(t => t.source === 'donation').reduce((s, t) => s + t.amount, 0);
+  const thisMonthBudgetSpent = budgetTxs.reduce((sum, t) => sum + t.amount, 0);
 
-  const totalIncome = incomeFee + incomeDonation;
-  const totalExpense = expenseBudget + expenseFee + expenseDonation;
+  // 2. Previous Budget Balance Calculation
+  const prevBudgetSpent = state.transactions
+    .filter(t => t.source === 'budget' && t.date < `${monthStr}-01`)
+    .reduce((sum, t) => sum + t.amount, 0);
+  const prevBudgetBalance = INITIAL_BUDGET - prevBudgetSpent;
+  const remainingBudget = prevBudgetBalance - thisMonthBudgetSpent;
 
-  const report = `
-[BalanceFlow 2026] ${m}월 재무 결산 보고
-------------------------------------
-■ 총 수입: ₩ ${totalIncome.toLocaleString()}
-  - 회비: ₩ ${incomeFee.toLocaleString()}
-  - 찬조금: ₩ ${incomeDonation.toLocaleString()}
+  // 3. Fee Summary (Cumulative up to this month)
+  const totalFeeIncome = state.members
+    .filter(mem => mem.type === 'fee' && mem.date < nextMonthStr)
+    .reduce((sum, mem) => sum + mem.amount, 0);
+  const totalFeeSpent = state.transactions
+    .filter(t => t.source === 'fee' && t.date < nextMonthStr)
+    .reduce((sum, t) => sum + t.amount, 0);
+  const remainingFee = totalFeeIncome - totalFeeSpent;
 
-■ 총 지출: ₩ ${totalExpense.toLocaleString()}
-  - 기본예산: ₩ ${expenseBudget.toLocaleString()}
-  - 회비지출: ₩ ${expenseFee.toLocaleString()}
-  - 찬조지출: ₩ ${expenseDonation.toLocaleString()}
+  // 4. Donation Summary (Cumulative up to this month)
+  const totalDonationIncome = state.members
+    .filter(mem => mem.type === 'donation' && mem.date < nextMonthStr)
+    .reduce((sum, mem) => sum + mem.amount, 0);
+  const totalDonationSpent = state.transactions
+    .filter(t => t.source === 'donation' && t.date < nextMonthStr)
+    .reduce((sum, t) => sum + t.amount, 0);
+  const remainingDonation = totalDonationIncome - totalDonationSpent;
 
-■ 순수지 결과: ₩ ${(totalIncome - totalExpense).toLocaleString()}
-------------------------------------
-※ 상세 내역은 대시보드에서 확인 가능합니다.
-  `.trim();
+  // Formatting the Report
+  let report = `🍂 ${m}월 결산\n\n`;
 
-  navigator.clipboard.writeText(report).then(() => {
-    showToast('결산 보고서가 클립보드에 복사되었습니다!', 'success');
+  report += `✅ 지출 내역 (예산 차감)\n`;
+  if (budgetTxs.length > 0) {
+    budgetTxs.forEach(t => {
+      const dateObj = new Date(t.date);
+      const day = weekdays[dateObj.getDay()];
+      const mm = dateObj.getMonth() + 1;
+      const dd = dateObj.getDate();
+      report += `• ${mm}/${dd}(${day}) ${t.reason}: ${t.amount.toLocaleString()}원\n`;
+    });
+  } else {
+    report += `• 지출 내역이 없습니다.\n`;
+  }
+  report += `• 총 지출: ${thisMonthBudgetSpent.toLocaleString()}원\n\n`;
+
+  report += `------------------------------------\n\n`;
+
+  report += `💰 남은 예산 계산\n`;
+  report += `• 이전 잔액: ${prevBudgetBalance.toLocaleString()}원\n`;
+  report += `• ${m}월 지출: ${thisMonthBudgetSpent.toLocaleString()}원\n`;
+  report += `• 🔥 남은 예산: ${remainingBudget.toLocaleString()}원\n\n`;
+
+  report += `------------------------------------\n\n`;
+
+  report += `📊 회비 정리\n`;
+  report += `• 총 수입: ${totalFeeIncome.toLocaleString()}원\n`;
+  report += `• 지출: ${totalFeeSpent.toLocaleString()}원\n`;
+  report += `• 🔥 남은 회비: ${remainingFee.toLocaleString()}원\n\n`;
+
+  report += `------------------------------------\n\n`;
+
+  report += `🎁 찬조금\n`;
+  report += `• 🔥 남은 찬조금: ${remainingDonation.toLocaleString()}원\n\n`;
+
+  report += `※ 상세 내역은 대시보드에서 확인 가능합니다.`;
+
+  navigator.clipboard.writeText(report.trim()).then(() => {
+    showToast(`${m}월 결산 보고서가 클립보드에 복사되었습니다!`, 'success');
   });
 };
 

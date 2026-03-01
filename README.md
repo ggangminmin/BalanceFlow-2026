@@ -26,7 +26,7 @@ GPT가 이 가계부의 데이터를 읽고 쓸 수 있도록 하려면 다음�
    {
      "mjs-account-book": {
        "command": "node",
-       "args": ["C:/Users/AIWEB/.gemini/antigravity/scratch/account-book-2026/mcp-server/index.js"]
+       "args": ["c:/Users/user/Desktop/BalanceFlow-2026-main/mcp-server/index.js"]
      }
    }
    ```
