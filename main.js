@@ -753,12 +753,16 @@ window.copySettlementReport = (month) => {
   const nextYear = m === 12 ? currentYear + 1 : currentYear;
   const nextMonthStr = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
 
-  // 1. Budget Transactions for the month
-  const budgetTxs = state.transactions
-    .filter(t => t.date.startsWith(monthStr) && t.source === 'budget')
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  // 1. All Transactions for the month (as seen in dashboard)
+  const monthlyTxs = state.transactions.filter(t => {
+    const [year, monthVal] = t.date.split('-').map(Number);
+    return year === currentYear && monthVal === m;
+  }).sort((a, b) => new Date(a.date) - new Date(b.date));
 
+  // Budget-only spending for the "Remaining Budget" calculation section
+  const budgetTxs = monthlyTxs.filter(t => t.source === 'budget');
   const thisMonthBudgetSpent = budgetTxs.reduce((sum, t) => sum + t.amount, 0);
+  const thisMonthTotalSpent = monthlyTxs.reduce((sum, t) => sum + t.amount, 0);
 
   // 2. Previous Budget Balance Calculation
   const prevBudgetSpent = state.transactions
@@ -786,42 +790,56 @@ window.copySettlementReport = (month) => {
   const remainingDonation = totalDonationIncome - totalDonationSpent;
 
   // Formatting the Report
-  let report = `🍂 ${m}월 결산\n\n`;
+  let report = `🎃 ${m}월 결산\n\n`;
 
-  report += `✅ 지출 내역 (예산 차감)\n`;
-  if (budgetTxs.length > 0) {
-    budgetTxs.forEach(t => {
-      const dateObj = new Date(t.date);
+  report += `✅ 지출 내역 (전체)\n`;
+  if (monthlyTxs.length > 0) {
+    monthlyTxs.forEach(t => {
+      // Parse date manually to avoid timezone shifts
+      const [year, month, day_num] = t.date.split('-').map(Number);
+      const dateObj = new Date(year, month - 1, day_num);
       const day = weekdays[dateObj.getDay()];
-      const mm = dateObj.getMonth() + 1;
-      const dd = dateObj.getDate();
-      report += `• ${mm}/${dd}(${day}) ${t.reason}: ${t.amount.toLocaleString()}원\n`;
+      // Remove text in parentheses (like names) for the report
+      let displayReason = t.reason.replace(/\s*\(.*?\)/g, '').trim();
+
+      // Also remove member names if they appear in the reason text
+      const memberNames = [...new Set(state.members.map(m => m.name))];
+      // Sort by length longest first to avoid partial matches
+      memberNames.sort((a, b) => b.length - a.length).forEach(name => {
+        if (name && name.length >= 2) {
+          const regex = new RegExp(`\\s*${name}\\s*`, 'g');
+          displayReason = displayReason.replace(regex, ' ').trim();
+        }
+      });
+
+      // Add source tag if it's not the default budget to distinguish origin
+      if (t.source === 'support') displayReason += ' [예산지원]';
+      else if (t.source === 'fee') displayReason += ' [회비]';
+      else if (t.source === 'donation') displayReason += ' [찬조금]';
+
+      report += `• ${month}/${day_num}(${day}) ${displayReason}: ${t.amount.toLocaleString()}원\n`;
     });
   } else {
     report += `• 지출 내역이 없습니다.\n`;
   }
-  report += `• 총 지출: ${thisMonthBudgetSpent.toLocaleString()}원\n\n`;
+  report += `\n총 지출: ${thisMonthTotalSpent.toLocaleString()}원\n\n`;
 
   report += `------------------------------------\n\n`;
 
   report += `💰 남은 예산 계산\n`;
   report += `• 이전 잔액: ${prevBudgetBalance.toLocaleString()}원\n`;
   report += `• ${m}월 지출: ${thisMonthBudgetSpent.toLocaleString()}원\n`;
-  report += `• 🔥 남은 예산: ${remainingBudget.toLocaleString()}원\n\n`;
+  report += `  🔥 남은 예산: ${remainingBudget.toLocaleString()}원\n\n`;
 
   report += `------------------------------------\n\n`;
 
-  report += `📊 회비 정리\n`;
-  report += `• 총 수입: ${totalFeeIncome.toLocaleString()}원\n`;
-  report += `• 지출: ${totalFeeSpent.toLocaleString()}원\n`;
-  report += `• 🔥 남은 회비: ${remainingFee.toLocaleString()}원\n\n`;
+  report += `🎁 회비 잔액\n`;
+  report += `💵 남은 회비: ${remainingFee.toLocaleString()}원\n\n`;
 
   report += `------------------------------------\n\n`;
 
-  report += `🎁 찬조금\n`;
-  report += `• 🔥 남은 찬조금: ${remainingDonation.toLocaleString()}원\n\n`;
-
-  report += `※ 상세 내역은 대시보드에서 확인 가능합니다.`;
+  report += `🎶 찬조금\n`;
+  report += `🎗️ 남은 찬조금: ${remainingDonation.toLocaleString()}원`;
 
   navigator.clipboard.writeText(report.trim()).then(() => {
     showToast(`${m}월 결산 보고서가 클립보드에 복사되었습니다!`, 'success');
