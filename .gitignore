@@ -26,3 +26,7 @@ dist-ssr
 .vercel
 node_modules
 dist
+.env*
+
+# local backups (never commit — receipts are private)
+_backup/
