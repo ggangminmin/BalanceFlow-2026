@@ -1062,16 +1062,54 @@ window.setViewMode = (mode) => { state.viewMode = mode; render(); window.scrollT
 window.setSettlementMonth = (m) => { state.settlementMonth = parseInt(m); render(); };
 
 // 보고서·ZIP 파일명용 사유 정리: 괄호 안 메모와 명단에 있는 이름을 뗀다
+// 이름 목록 = 명단 탭 이름 + 사유 괄호 안에 적힌 결제자 이름("(동우)", "(김예인, 입금완료)"). 명단에 없는 사람도 잡힌다.
+const NAME_NOISE = new Set(['입금', '완료', '입근', '계산', '결혼식', '동규한테', '청구받기', '지원인듯', '전']);
+function knownNames() {
+  const set = new Set(state.members.map(m => String(m.name || '').normalize('NFC').trim()));
+  state.transactions.forEach(t => {
+    const src = String(t.reason || '').normalize('NFC');
+    for (const m of src.matchAll(/\(([^)]*)\)/g)) {
+      m[1].split(/[\s,.]+/).forEach(tok => {
+        const w = tok.replace(/\d+/g, '');
+        if (/^[가-힣]{2,3}$/.test(w) && !NAME_NOISE.has(w)) set.add(w);
+      });
+    }
+  });
+  return [...set].filter(n => n.length >= 2).sort((a, b) => b.length - a.length);
+}
+
 function cleanReason(reason) {
   // NFC 정규화: 맥 파일명에서 복붙한 사유는 자모가 분해된(NFD) 채 저장돼 정규식이 "월/일"을 못 알아본다
   let out = String(reason || '').normalize('NFC').replace(/\s*\(.*?\)/g, '').trim();
   // 사유 앞머리에 손으로 적은 날짜("8/1 토,", "8월 15일", "8/22(토)", "8월8일 토요일")는 뗀다 — 보고서·파일명이 날짜를 따로 붙이므로
   out = out.replace(/^\s*\d{1,2}\s*[\/월]\s*\d{1,2}\s*일?\s*(?:\(?[일월화수목금토]요일\)?|\(?[일월화수목금토]\)?)?\s*[,·:\-]?\s*/, '');
-  const names = [...new Set(state.members.map(m => m.name))].sort((a, b) => b.length - a.length);
+  const names = knownNames();
   names.forEach(name => {
     if (name && name.length >= 2) out = out.replace(new RegExp(`\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'g'), ' ').trim();
   });
   return out.replace(/\s{2,}/g, ' ');
+}
+
+// 보고서용 항목명: 사유 원문을 「(맥락) 항목」 한두 단어로 바꾼다.
+// 원문(화면·ZIP 파일명)은 그대로 두고, 청구서에 이름·입금상태·"찬양팀" 같은 메모가 새지 않게 복사할 때만 적용.
+const REPORT_CONTEXT = [[/\bmt\b|엠티/i, 'MT'], [/수련회/, '수련회']];
+const REPORT_ITEMS = [
+  [/아침/, '아침식사'], [/점심/, '점심'], [/저녁/, '저녁'], [/카페|커피/, '카페'],
+  [/식수|물\s*구매|생수/, '식수비'], [/장소\s*예약|숙소|예약/, '장소 예약'], [/준비/, '준비'],
+  [/간식/, '간식'], [/피자|치킨|햄버거/, '간식'], [/회식/, '회식'], [/교통|주유|택시|버스/, '교통비'],
+];
+const REPORT_NOISE = /찬양팀|계산|입금\s*(전|완료)|입근\s*전|토욜|[일월화수목금토]요일|모임|없음|모름|인듯\??|\s*[,.]\s*/g;
+
+function reportLabel(reason) {
+  const src = String(reason || '').normalize('NFC');
+  const ctx = REPORT_CONTEXT.find(([re]) => re.test(src))?.[1];
+  const item = REPORT_ITEMS.find(([re]) => re.test(src))?.[1];
+  if (item) return ctx ? `${ctx} ${item}` : item;
+  // 표에 없는 사유: 날짜·괄호·이름·메모를 떼고 남는 말만
+  let rest = cleanReason(src).replace(REPORT_NOISE, ' ').replace(/\s{2,}/g, ' ').trim();
+  if (ctx) rest = rest.replace(/\bmt\b|엠티|수련회/gi, '').trim();
+  if (ctx && rest) return `${ctx} ${rest}`;
+  return ctx || rest || '기타';
 }
 
 window.copySettlementReport = (month) => {
@@ -1125,11 +1163,20 @@ window.copySettlementReport = (month) => {
   let report = `${m}월 결산\n\n`;
 
   report += `[지출 내역]\n`;
-  if (monthlyTxs.length > 0) {
-    monthlyTxs.forEach(t => {
+  // 0원 건(모임 없음 메모 등)은 청구서에 안 싣는다
+  const reportTxs = monthlyTxs.filter(t => t.amount > 0);
+  if (reportTxs.length > 0) {
+    // 같은 날 같은 항목이 여러 건이면 「점심 1 / 점심 2」로 번호
+    const labeled = reportTxs.map(t => ({ t, label: reportLabel(t.reason) }));
+    const counts = {};
+    labeled.forEach(({ t, label }) => { const k = `${t.date}|${label}`; counts[k] = (counts[k] || 0) + 1; });
+    const seen = {};
+    labeled.forEach(({ t, label }) => {
       const [year, month, day_num] = t.date.split('-').map(Number);
       const day = weekdays[new Date(year, month - 1, day_num).getDay()];
-      report += `• ${month}/${day_num}(${day}) ${cleanReason(t.reason)}: ${t.amount.toLocaleString()}원\n`;
+      const k = `${t.date}|${label}`;
+      const name = counts[k] > 1 ? `${label} ${(seen[k] = (seen[k] || 0) + 1)}` : label;
+      report += `• ${month}/${day_num}(${day}) ${name}: ${t.amount.toLocaleString()}원\n`;
     });
   } else {
     report += `• 지출 내역이 없습니다.\n`;
