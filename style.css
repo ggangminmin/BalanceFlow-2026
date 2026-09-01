@@ -761,6 +761,26 @@ h3 {
   transition: border-color var(--ease), box-shadow var(--ease);
 }
 
+/* 금액 입력: 오른쪽에 「원」 접미 고정 */
+.amount-field {
+  position: relative;
+}
+
+.amount-field .form-input {
+  padding-right: 40px;
+}
+
+.amount-field::after {
+  content: '원';
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 15px;
+  color: var(--ink-60);
+  pointer-events: none;
+}
+
 .form-input::placeholder {
   color: var(--ink-48);
 }

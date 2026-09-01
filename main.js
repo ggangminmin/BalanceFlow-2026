@@ -9,6 +9,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 // --- State Management ---
 const INITIAL_BUDGET = 3200000;
 const MEMBERS_PER_PAGE = 20;
+// 실제 통장 잔액 맞춤 보정 (이자 등 명단·지출에 안 잡히는 차액). 2026-09-01 잔여 회비 12,170원 기준.
+const BALANCE_ADJUST = { fee: 220, donation: 0 };
 
 let state = {
   totalInitialBudget: INITIAL_BUDGET,
@@ -171,8 +173,8 @@ function calculateCurrentStats() {
 
   return {
     currentBudget: INITIAL_BUDGET - generalExpenses,
-    currentFee: feeTotal - feeExpenses,
-    currentDonation: donationTotal - donationExpenses,
+    currentFee: feeTotal - feeExpenses + BALANCE_ADJUST.fee,
+    currentDonation: donationTotal - donationExpenses + BALANCE_ADJUST.donation,
     totalSpent: state.transactions.filter(t => t.source !== 'support').reduce((acc, curr) => acc + curr.amount, 0),
     supportTotal: supportTxs.reduce((acc, curr) => acc + curr.amount, 0),
     supportCount: supportTxs.length
@@ -495,7 +497,7 @@ function AddTransactionModal() {
           </div>
           <div class="form-group">
             <label class="form-label">금액</label>
-            <input type="text" id="amount" class="form-input" value="${tx ? tx.amount.toLocaleString() : ''}" placeholder="0" required oninput="window.formatAmount(this)">
+            <div class="amount-field"><input type="text" id="amount" class="form-input" value="${tx ? tx.amount.toLocaleString() : ''}" placeholder="0" required inputmode="numeric" oninput="window.formatAmount(this)"></div>
           </div>
           <div class="form-group">
             <label class="form-label">자금 출처</label>
@@ -541,7 +543,7 @@ function MembersView() {
   const pool = (type) => {
     const income = state.members.filter(m => m.type === type).reduce((s, m) => s + m.amount, 0);
     const spent = state.transactions.filter(t => t.source === type).reduce((s, t) => s + t.amount, 0);
-    return { income, spent, left: income - spent };
+    return { income, spent, left: income - spent + BALANCE_ADJUST[type] };
   };
   const fee = pool('fee');
   const donation = pool('donation');
@@ -583,7 +585,7 @@ function MembersView() {
           </div>
           <div>
             <label class="form-label">금액</label>
-            <input type="text" id="mAmount" class="form-input" placeholder="0" required inputmode="numeric" oninput="window.formatAmount(this)">
+            <div class="amount-field"><input type="text" id="mAmount" class="form-input" placeholder="0" required inputmode="numeric" oninput="window.formatAmount(this)"></div>
           </div>
           <div>
             <label class="form-label">구분</label>
@@ -962,7 +964,7 @@ window.copySettlementReport = (month) => {
   const totalFeeSpent = state.transactions
     .filter(t => t.source === 'fee' && t.date < nextMonthStr)
     .reduce((sum, t) => sum + t.amount, 0);
-  const remainingFee = totalFeeIncome - totalFeeSpent;
+  const remainingFee = totalFeeIncome - totalFeeSpent + BALANCE_ADJUST.fee;
 
   // 4. Donation Summary (Cumulative up to this month)
   const totalDonationIncome = state.members
@@ -971,7 +973,7 @@ window.copySettlementReport = (month) => {
   const totalDonationSpent = state.transactions
     .filter(t => t.source === 'donation' && t.date < nextMonthStr)
     .reduce((sum, t) => sum + t.amount, 0);
-  const remainingDonation = totalDonationIncome - totalDonationSpent;
+  const remainingDonation = totalDonationIncome - totalDonationSpent + BALANCE_ADJUST.donation;
 
   // Formatting the Report (출처 구분 없이, 이모지 없이)
   let report = `${m}월 결산\n\n`;
