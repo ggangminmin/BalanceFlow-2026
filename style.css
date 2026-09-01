@@ -1052,6 +1052,10 @@ input[type="file"].form-input::file-selector-button {
   height: 46px;
 }
 
+.transfer-form {
+  grid-template-columns: 1.3fr 1.2fr 1.2fr 2fr auto;
+}
+
 @media (max-width: 900px) {
   .member-form {
     grid-template-columns: 1fr 1fr;
@@ -1105,10 +1109,15 @@ input[type="file"].form-input::file-selector-button {
 
 .pool-breakdown {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 6px 16px;
   font-size: 14px;
   color: var(--ink-60);
   letter-spacing: -0.224px;
+}
+
+.pool-breakdown > span {
+  white-space: nowrap;
 }
 
 .pool-breakdown b {

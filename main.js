@@ -16,6 +16,7 @@ let state = {
   totalInitialBudget: INITIAL_BUDGET,
   transactions: [],
   members: [],
+  transfers: [],   // 회비 ↔ 찬조금 이체 기록 (두 잔액에만 반영, 지출·명단엔 안 섞임)
   currentMemberPage: 1,
   memberFilter: 'all',
   editingId: null,
@@ -45,12 +46,19 @@ async function fetchData() {
       .select('*')
       .order('date', { ascending: true });
 
+    const { data: transfers, error: tfError } = await supabase
+      .from('transfers')
+      .select('*')
+      .order('date', { ascending: true });
+
     if (txError) throw txError;
     if (mError) throw mError;
+    if (tfError) throw tfError;
 
     // receipts === undefined 는 「아직 안 받음」, []/null 은 「영수증 없음」
     state.transactions = (transactions || []).map(t => ({ ...t, receipts: undefined }));
     state.members = members || [];
+    state.transfers = transfers || [];
   } catch (err) {
     console.error('Error fetching data:', JSON.stringify({ message: err.message, code: err.code, details: err.details, hint: err.hint }));
     showToast(`데이터를 불러오는데 실패했습니다. (${err.message || err})`, 'danger');
@@ -159,6 +167,33 @@ async function removeMember(id) {
   }
 }
 
+async function syncTransfer(tf) {
+  try {
+    const { error } = await supabase.from('transfers').upsert(tf);
+    if (error) throw error;
+  } catch (err) {
+    console.error('Error syncing transfer:', err);
+    showToast('이체 기록 저장에 실패했습니다.', 'danger');
+  }
+}
+
+async function removeTransfer(id) {
+  try {
+    const { error } = await supabase.from('transfers').delete().eq('id', id);
+    if (error) throw error;
+  } catch (err) {
+    console.error('Error deleting transfer:', err);
+    showToast('이체 기록 삭제에 실패했습니다.', 'danger');
+  }
+}
+
+// 이체 순증감: 들어온 것 − 나간 것. beforeDate 를 주면 그 날짜 전(월간 결산 누계)만.
+function transferNet(pool, beforeDate) {
+  return state.transfers
+    .filter(t => !beforeDate || t.date < beforeDate)
+    .reduce((s, t) => s + (t.to_pool === pool ? t.amount : 0) - (t.from_pool === pool ? t.amount : 0), 0);
+}
+
 // 목록·보고서·ZIP이 같은 순서를 쓰도록: 날짜 → 등록 순(id = 등록 시각)
 const byDateThenId = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : String(a.id).localeCompare(String(b.id)));
 
@@ -173,8 +208,8 @@ function calculateCurrentStats() {
 
   return {
     currentBudget: INITIAL_BUDGET - generalExpenses,
-    currentFee: feeTotal - feeExpenses + BALANCE_ADJUST.fee,
-    currentDonation: donationTotal - donationExpenses + BALANCE_ADJUST.donation,
+    currentFee: feeTotal - feeExpenses + BALANCE_ADJUST.fee + transferNet('fee'),
+    currentDonation: donationTotal - donationExpenses + BALANCE_ADJUST.donation + transferNet('donation'),
     totalSpent: state.transactions.filter(t => t.source !== 'support').reduce((acc, curr) => acc + curr.amount, 0),
     supportTotal: supportTxs.reduce((acc, curr) => acc + curr.amount, 0),
     supportCount: supportTxs.length
@@ -543,7 +578,8 @@ function MembersView() {
   const pool = (type) => {
     const income = state.members.filter(m => m.type === type).reduce((s, m) => s + m.amount, 0);
     const spent = state.transactions.filter(t => t.source === type).reduce((s, t) => s + t.amount, 0);
-    return { income, spent, left: income - spent + BALANCE_ADJUST[type] };
+    const moved = transferNet(type);
+    return { income, spent, moved, left: income - spent + BALANCE_ADJUST[type] + moved };
   };
   const fee = pool('fee');
   const donation = pool('donation');
@@ -555,6 +591,7 @@ function MembersView() {
       <div class="pool-breakdown">
         <span>입금 <b>${p.income.toLocaleString()}원</b></span>
         <span>지출 <b style="color: var(--danger)">${p.spent.toLocaleString()}원</b></span>
+        ${p.moved ? `<span>이체 <b>${p.moved > 0 ? '+' : '−'}${Math.abs(p.moved).toLocaleString()}원</b></span>` : ''}
       </div>
     </div>
   `;
@@ -603,6 +640,62 @@ function MembersView() {
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.75rem;">
           ※ 입금일이 속한 달의 결산에 수입으로 잡힙니다. 지난달 건을 넣을 땐 날짜를 꼭 바꿔주세요.
         </p>
+      </div>
+
+      <div class="glass stat-card" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 0.35rem;">회비 ↔ 찬조금 이체</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.25rem;">
+          한쪽 잔액을 다른 쪽으로 옮깁니다. 지출·명단에는 안 잡히고 두 잔액에만 반영됩니다.
+        </p>
+        <form id="transferForm" class="member-form transfer-form">
+          <div>
+            <label class="form-label">방향</label>
+            <select id="tfDirection" class="form-input">
+              <option value="fee>donation">회비 → 찬조금</option>
+              <option value="donation>fee">찬조금 → 회비</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">금액</label>
+            <div class="amount-field"><input type="text" id="tfAmount" class="form-input" placeholder="0" required inputmode="numeric" oninput="window.formatAmount(this)"></div>
+          </div>
+          <div>
+            <label class="form-label">날짜</label>
+            <input type="date" id="tfDate" class="form-input" value="${today}" required>
+          </div>
+          <div>
+            <label class="form-label">메모 (선택)</label>
+            <input type="text" id="tfMemo" class="form-input" placeholder="예: 찬조금 부족분 보충">
+          </div>
+          <button type="submit" class="btn btn-primary">이체하기</button>
+        </form>
+
+        ${state.transfers.length ? `
+          <table class="data-table" style="margin-top: 1.25rem;">
+            <thead>
+              <tr>
+                <th style="width: 120px;">날짜</th>
+                <th style="width: 160px;">방향</th>
+                <th>메모</th>
+                <th style="text-align: right; width: 140px;">금액</th>
+                <th style="width: 60px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${[...state.transfers].sort(byDateThenId).reverse().map(t => `
+                <tr>
+                  <td style="color: var(--text-muted); font-size: 0.85rem;">${t.date}</td>
+                  <td><span class="badge badge-${t.from_pool}">${t.from_pool === 'fee' ? '회비' : '찬조금'}</span> → <span class="badge badge-${t.to_pool}">${t.to_pool === 'fee' ? '회비' : '찬조금'}</span></td>
+                  <td style="color: var(--text-muted);">${t.memo || ''}</td>
+                  <td style="text-align: right; font-weight: 600;">₩ ${t.amount.toLocaleString()}</td>
+                  <td style="text-align: right;">
+                    <button class="icon-btn delete" onclick="window.deleteTransfer('${t.id}', event)" title="삭제">✕</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : ''}
       </div>
 
       <div class="glass stat-card">
@@ -743,6 +836,7 @@ function render() {
 
   document.getElementById('addForm')?.addEventListener('submit', handleTransactionSubmit);
   document.getElementById('memberForm')?.addEventListener('submit', handleAddMember);
+  document.getElementById('transferForm')?.addEventListener('submit', handleAddTransfer);
   document.getElementById('receipts')?.addEventListener('change', (e) => {
     const files = e.target.files;
     document.getElementById('fileNames').textContent = `${files.length}개의 파일 선택됨`;
@@ -813,6 +907,36 @@ async function handleAddMember(e) {
   state.currentMemberPage = 1;
   render();
   showToast(`${newMember.type === 'fee' ? '회비' : '찬조금'} ₩ ${newMember.amount.toLocaleString()}원이 등록되었습니다.`, 'success');
+}
+
+const POOL_LABEL = { fee: '회비', donation: '찬조금' };
+const poolTo = (pool) => pool === 'fee' ? '회비로' : '찬조금으로';
+
+async function handleAddTransfer(e) {
+  e.preventDefault();
+  const [from_pool, to_pool] = document.getElementById('tfDirection').value.split('>');
+  const amount = parseInt(document.getElementById('tfAmount').value.replace(/,/g, '')) || 0;
+  if (amount <= 0) { showToast('이체 금액을 입력해주세요.', 'danger'); return; }
+
+  const stats = calculateCurrentStats();
+  const available = from_pool === 'fee' ? stats.currentFee : stats.currentDonation;
+  if (amount > available) {
+    showToast(`잔여 ${POOL_LABEL[from_pool]}(₩ ${available.toLocaleString()})보다 큰 금액은 옮길 수 없습니다.`, 'danger');
+    return;
+  }
+
+  const tf = {
+    id: String(Date.now()),
+    from_pool,
+    to_pool,
+    amount,
+    date: document.getElementById('tfDate').value || new Date().toISOString().split('T')[0],
+    memo: document.getElementById('tfMemo').value.trim() || null
+  };
+  state.transfers.push(tf);
+  syncTransfer(tf);
+  render();
+  showToast(`${POOL_LABEL[from_pool]}에서 ${poolTo(to_pool)} ₩ ${amount.toLocaleString()}원을 옮겼습니다.`, 'success');
 }
 
 // --- Window Globals ---
@@ -906,6 +1030,28 @@ window.deleteMember = (id, event) => {
   };
 };
 
+window.deleteTransfer = (id, event) => {
+  if (event) event.stopPropagation();
+  const targetId = String(id);
+  const tf = state.transfers.find(t => String(t.id) === targetId);
+  if (!tf) return;
+
+  const modal = document.getElementById('confirmModal');
+  const message = document.getElementById('confirmMessage');
+  const actionBtn = document.getElementById('confirmActionBtn');
+
+  message.innerHTML = `이 이체 기록을 삭제하시겠습니까?<br><b style="color: var(--primary)">₩ ${tf.amount.toLocaleString()}원</b>이 ${POOL_LABEL[tf.to_pool]}에서 ${poolTo(tf.from_pool)} 되돌아갑니다.`;
+  modal.classList.add('active');
+
+  actionBtn.onclick = () => {
+    state.transfers = state.transfers.filter(t => String(t.id) !== targetId);
+    removeTransfer(targetId);
+    render();
+    window.hideModal('confirmModal');
+    showToast('이체 기록이 삭제되었습니다.', 'danger');
+  };
+};
+
 window.hideModal = (id) => document.getElementById(id)?.classList.remove('active');
 
 window.selectMonth = (m) => { state.selectedMonth = m; render(); };
@@ -964,7 +1110,7 @@ window.copySettlementReport = (month) => {
   const totalFeeSpent = state.transactions
     .filter(t => t.source === 'fee' && t.date < nextMonthStr)
     .reduce((sum, t) => sum + t.amount, 0);
-  const remainingFee = totalFeeIncome - totalFeeSpent + BALANCE_ADJUST.fee;
+  const remainingFee = totalFeeIncome - totalFeeSpent + BALANCE_ADJUST.fee + transferNet('fee', nextMonthStr);
 
   // 4. Donation Summary (Cumulative up to this month)
   const totalDonationIncome = state.members
@@ -973,7 +1119,7 @@ window.copySettlementReport = (month) => {
   const totalDonationSpent = state.transactions
     .filter(t => t.source === 'donation' && t.date < nextMonthStr)
     .reduce((sum, t) => sum + t.amount, 0);
-  const remainingDonation = totalDonationIncome - totalDonationSpent + BALANCE_ADJUST.donation;
+  const remainingDonation = totalDonationIncome - totalDonationSpent + BALANCE_ADJUST.donation + transferNet('donation', nextMonthStr);
 
   // Formatting the Report (출처 구분 없이, 이모지 없이)
   let report = `${m}월 결산\n\n`;
