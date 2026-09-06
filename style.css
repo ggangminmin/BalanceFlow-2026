@@ -498,7 +498,7 @@ h3 {
 .tx-head,
 .tx-row {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr) 84px 110px 130px 72px;
+  grid-template-columns: 84px minmax(0, 1fr) 84px 78px 110px 130px 72px;
   align-items: center;
   gap: 12px;
   padding: 0 16px;
@@ -618,10 +618,10 @@ h3 {
   }
 
   .tx-row {
-    grid-template-columns: 52px minmax(0, 1fr) auto auto;
+    grid-template-columns: 52px minmax(0, 1fr) auto auto auto;
     grid-template-areas:
-      "date reason reason amount"
-      "date meta receipt actions";
+      "date reason reason reason amount"
+      "date meta pay receipt actions";
     min-height: 0;
     padding: 12px;
     row-gap: 6px;
@@ -639,8 +639,95 @@ h3 {
   }
   .tx-row .tx-amount { grid-area: amount; align-self: start; }
   .tx-row .tx-meta { grid-area: meta; display: flex; gap: 8px; align-items: center; }
+  .tx-row .tx-pay { grid-area: pay; display: flex; align-items: center; }
   .tx-row .receipt-slot { grid-area: receipt; display: flex; align-items: center; }
   .tx-row .tx-actions { grid-area: actions; opacity: 1; }
+}
+
+/* ---------- 입금 상태 칩 (클릭 = 토글, 새 브랜드색 없이 블루/회색 2단계) ---------- */
+.tx-pay {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.pay-chip {
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: -0.12px;
+  line-height: 1.4;
+  padding: 3px 9px;
+  border-radius: var(--pill);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--ease), color var(--ease), border-color var(--ease), transform var(--ease);
+}
+
+.pay-chip:active {
+  transform: scale(0.95);
+}
+
+.pay-pending {
+  background: var(--canvas);
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  font-weight: 600;
+}
+
+.pay-pending:hover {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.pay-done {
+  background: var(--parchment);
+  color: var(--ink-48);
+  border: 1px solid var(--hairline);
+  font-weight: 400;
+}
+
+.pay-done:hover {
+  color: var(--ink-80);
+  border-color: var(--hairline-solid);
+}
+
+/* 확인 모달 안 대상 목록 */
+.confirm-list {
+  list-style: none;
+  margin: 14px 0 10px;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  text-align: left;
+  border-top: 1px solid var(--hairline);
+}
+
+.confirm-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--divider-soft);
+  font-size: 13px;
+  color: var(--ink-80);
+}
+
+.confirm-list li b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.confirm-total {
+  text-align: right;
+  font-size: 13px;
+  color: var(--ink-60);
+}
+
+.confirm-total b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- Badges (quiet chips, label carries meaning) ---------- */

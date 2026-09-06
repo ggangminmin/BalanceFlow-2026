@@ -137,6 +137,15 @@ async function syncTransaction(tx) {
   }
 }
 
+// 사유 텍스트 한 칸만 갱신한다. upsert는 지연로딩 중인 receipts를 덮어쓸 위험이 있어 쓰지 않는다.
+async function updateTransactionReason(id, reason) {
+  const { error } = await supabase.from('transactions').update({ reason }).eq('id', id);
+  if (error) {
+    console.error('Error updating reason:', error);
+    throw error;
+  }
+}
+
 async function removeTransaction(id) {
   try {
     const { error } = await supabase.from('transactions').delete().eq('id', id);
@@ -270,6 +279,51 @@ function Dashboard() {
   `;
 }
 
+// ---------- 입금 상태 ----------
+// 민석이 사유에 손으로 적어 온 "입금 전 / 입금완료" 표기가 유일한 진실. DB 컬럼을 늘리지 않고 그 토큰만 뒤집는다.
+// "입근 전" 같은 오타도 잡아서 "입금 완료"로 교정한다.
+const DEPOSIT_RE = /(입금|입근)(\s*)(완료|전)/;
+
+function depositStatus(reason) {
+  const m = (reason || '').normalize('NFC').match(DEPOSIT_RE);
+  if (!m) return null;
+  return m[3] === '전' ? 'pending' : 'done';
+}
+
+// 매칭된 토큰 그 자리만 치환한다. 띄어쓰기 형태는 원문 그대로 유지.
+function flipDeposit(reason, to) {
+  const src = (reason || '').normalize('NFC');
+  return src.replace(DEPOSIT_RE, (_, __, sp, ___) => `입금${sp}${to === 'done' ? '완료' : '전'}`);
+}
+
+// 화면에서는 입금 표기를 빼고 칩으로 보여준다(원문 DB는 그대로).
+function displayReason(reason) {
+  const src = (reason || '').normalize('NFC');
+  if (!DEPOSIT_RE.test(src)) return src;
+  return src
+    .replace(DEPOSIT_RE, '')
+    .replace(/[,.·]\s*\)/g, ')')
+    .replace(/\(\s*[,·]\s*/g, '(')
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.)])/g, '$1')
+    .trim();
+}
+
+// 확인 목록용 — 앞에 날짜를 따로 붙이므로 사유 앞머리 손날짜만 뗀다(누가 냈는지 이름은 남긴다).
+const LEADING_DATE_RE = /^\s*\d{1,2}\s*[\/월]\s*\d{1,2}\s*일?\s*(?:\(?[일월화수목금토]요일\)?|\(?[일월화수목금토]\)?)?\s*[,·:\-]?\s*/;
+
+function shortReason(reason) {
+  return displayReason(reason).replace(LEADING_DATE_RE, '').trim() || displayReason(reason);
+}
+
+function depositChipHtml(t) {
+  const st = depositStatus(t.reason);
+  if (!st) return '';
+  return `<button class="pay-chip pay-${st}" onclick="window.toggleDeposit('${t.id}', event)"
+    title="${st === 'pending' ? '클릭하면 입금 완료로 바꿉니다' : '클릭하면 입금 전으로 되돌립니다'}">${st === 'pending' ? '입금 전' : '입금 완료'}</button>`;
+}
+
 function TransactionList() {
   const YEAR = 2026;
   const months = Array.from({ length: 12 }, (_, i) => i + 1);
@@ -298,6 +352,7 @@ function TransactionList() {
   const pct = v => selSpent ? (v / selSpent * 100).toFixed(1) : 0;
   const sourceLabel = { budget: '기본예산', fee: '회비', donation: '찬조금', support: '예산지원' };
   const weekdays = ['일', '월', '화', '수', '목', '금', '토'];
+  const pendingCount = txs.filter(t => depositStatus(t.reason) === 'pending').length;
 
   return `
     <div class="section-head">
@@ -327,6 +382,7 @@ function TransactionList() {
             <button class="copy-btn" onclick="window.copyAmount(${selSpent})" title="합계 복사">⧉</button>
             ₩ ${selSpent.toLocaleString()}
           </span>
+          ${pendingCount ? `<button class="btn btn-primary btn-sm" onclick="window.markMonthDeposited(${sel})">입금 전 ${pendingCount}건 → 완료</button>` : ''}
           <button class="btn btn-ghost btn-sm" onclick="window.copySettlementReport(${sel})">보고서 복사</button>
           <button class="btn btn-ghost btn-sm" onclick="window.downloadMonthZip(${sel})">영수증 ZIP</button>
         </span>
@@ -346,7 +402,7 @@ function TransactionList() {
 
       ${txs.length === 0 ? `<div class="tx-empty">${sel}월 지출 내역이 없습니다.</div>` : `
         <div class="tx-head">
-          <span>날짜</span><span>내역</span><span>출처</span><span>영수증</span><span style="text-align: right;">금액</span><span></span>
+          <span>날짜</span><span>내역</span><span>출처</span><span>입금</span><span>영수증</span><span style="text-align: right;">금액</span><span></span>
         </div>
         ${txs.map(t => {
           const [y, mo, d] = t.date.split('-').map(Number);
@@ -354,8 +410,9 @@ function TransactionList() {
           return `
             <div class="tx-row">
               <span class="tx-date"><b>${mo}/${d}</b> ${wd}</span>
-              <span class="tx-reason" title="${t.reason}">${t.reason}</span>
+              <span class="tx-reason" title="${t.reason}">${displayReason(t.reason)}</span>
               <span class="tx-meta"><span class="badge badge-${t.source}">${sourceLabel[t.source] || t.source}</span></span>
+              <span class="tx-pay">${depositChipHtml(t)}</span>
               <span class="receipt-slot" data-tx="${t.id}">${receiptSlotHtml(t)}</span>
               <span class="tx-amount ${t.source === 'support' ? 'support' : ''}">
                 <button class="copy-btn" onclick="window.copyAmount(${t.amount})" title="금액 복사">⧉</button>
@@ -972,6 +1029,23 @@ window.editTransaction = async (id) => {
   document.getElementById('addModal').classList.add('active');
 };
 
+// 확인 모달 공용화 — 제목/버튼을 매번 명시해 직전 사용 흔적이 남지 않게 한다.
+function openConfirm({ title, message, actionLabel, actionClass = 'btn-danger', wide = false, onConfirm }) {
+  const modal = document.getElementById('confirmModal');
+  const box = modal.querySelector('.modal-content');
+  const titleEl = document.getElementById('confirmTitle');
+  const messageEl = document.getElementById('confirmMessage');
+  const actionBtn = document.getElementById('confirmActionBtn');
+  titleEl.textContent = title;
+  messageEl.innerHTML = message;
+  actionBtn.textContent = actionLabel;
+  actionBtn.className = `btn ${actionClass}`;
+  box.style.maxWidth = wide ? '480px' : '400px';
+  messageEl.style.textAlign = wide ? 'left' : 'center';
+  modal.classList.add('active');
+  actionBtn.onclick = onConfirm;
+}
+
 window.deleteTransaction = (id, event) => {
   if (event) event.stopPropagation();
 
@@ -988,6 +1062,11 @@ window.deleteTransaction = (id, event) => {
   const modal = document.getElementById('confirmModal');
   const message = document.getElementById('confirmMessage');
   const actionBtn = document.getElementById('confirmActionBtn');
+  document.getElementById('confirmTitle').textContent = '삭제 확인';
+  actionBtn.textContent = '삭제하기';
+  actionBtn.className = 'btn btn-danger';
+  modal.querySelector('.modal-content').style.maxWidth = '400px';
+  message.style.textAlign = 'center';
 
   if (isSupport) {
     message.innerHTML = `'${txToDelete.reason}' 내역을 삭제하시겠습니까?<br>이 항목은 증빙용이며 예산 잔액에 영향을 주지 않습니다.`;
@@ -1016,6 +1095,11 @@ window.deleteMember = (id, event) => {
   const modal = document.getElementById('confirmModal');
   const message = document.getElementById('confirmMessage');
   const actionBtn = document.getElementById('confirmActionBtn');
+  document.getElementById('confirmTitle').textContent = '삭제 확인';
+  actionBtn.textContent = '삭제하기';
+  actionBtn.className = 'btn btn-danger';
+  modal.querySelector('.modal-content').style.maxWidth = '400px';
+  message.style.textAlign = 'center';
 
   message.innerHTML = `'${memberToDelete.name}' 명단을 삭제하시겠습니까?<br><b style="color: var(--primary)">₩ ${memberToDelete.amount.toLocaleString()}원</b>이 ${memberToDelete.type === 'fee' ? '회비' : '찬조금'} 풀(Pool)에서 제거됩니다.`;
 
@@ -1039,6 +1123,11 @@ window.deleteTransfer = (id, event) => {
   const modal = document.getElementById('confirmModal');
   const message = document.getElementById('confirmMessage');
   const actionBtn = document.getElementById('confirmActionBtn');
+  document.getElementById('confirmTitle').textContent = '삭제 확인';
+  actionBtn.textContent = '삭제하기';
+  actionBtn.className = 'btn btn-danger';
+  modal.querySelector('.modal-content').style.maxWidth = '400px';
+  message.style.textAlign = 'center';
 
   message.innerHTML = `이 이체 기록을 삭제하시겠습니까?<br><b style="color: var(--primary)">₩ ${tf.amount.toLocaleString()}원</b>이 ${POOL_LABEL[tf.to_pool]}에서 ${poolTo(tf.from_pool)} 되돌아갑니다.`;
   modal.classList.add('active');
@@ -1195,6 +1284,77 @@ window.copySettlementReport = (month) => {
 
   navigator.clipboard.writeText(report.trim()).then(() => {
     showToast(`${m}월 결산 보고서가 클립보드에 복사되었습니다!`, 'success');
+  });
+};
+
+// 칩 클릭 = 그 행 하나만 입금 상태를 뒤집는다. 사유 원문에서 매칭된 토큰만 바뀐다.
+window.toggleDeposit = async (id, event) => {
+  if (event) event.stopPropagation();
+  const tx = state.transactions.find(t => String(t.id) === String(id));
+  if (!tx) return;
+  const st = depositStatus(tx.reason);
+  if (!st) return;
+
+  const before = tx.reason;
+  const after = flipDeposit(before, st === 'pending' ? 'done' : 'pending');
+  if (after === before) return;
+
+  tx.reason = after;
+  render();
+  try {
+    await updateTransactionReason(tx.id, after);
+    showToast(st === 'pending' ? '입금 완료로 바꿨습니다.' : '입금 전으로 되돌렸습니다.', 'success');
+  } catch (err) {
+    tx.reason = before;   // 저장 실패면 화면도 되돌린다
+    render();
+    showToast('입금 상태 저장에 실패했습니다.', 'danger');
+  }
+};
+
+// 상단 버튼 = 이 달의 "입금 전"을 한 번에. 대상 목록을 먼저 보여주고 승인받는다.
+window.markMonthDeposited = (month) => {
+  const monthStr = `2026-${String(month).padStart(2, '0')}`;
+  const targets = state.transactions
+    .filter(t => t.date.startsWith(monthStr) && depositStatus(t.reason) === 'pending')
+    .sort(byDateThenId);
+  if (targets.length === 0) return;
+
+  const total = targets.reduce((s, t) => s + t.amount, 0);
+  const list = targets.map(t => {
+    const [, mo, d] = t.date.split('-').map(Number);
+    return `<li><span>${mo}/${d} ${shortReason(t.reason)}</span><b>₩ ${t.amount.toLocaleString()}</b></li>`;
+  }).join('');
+
+  openConfirm({
+    title: `입금 완료 처리`,
+    message: `아래 <b>${targets.length}건</b>을 입금 완료로 바꿉니다. 금액·영수증·날짜는 그대로이고, 사유의 "입금 전" 표기만 "입금 완료"로 바뀝니다.
+      <ul class="confirm-list">${list}</ul>
+      <div class="confirm-total">합계 <b>₩ ${total.toLocaleString()}</b></div>`,
+    actionLabel: `${targets.length}건 완료 처리`,
+    actionClass: 'btn-primary',
+    wide: true,
+    onConfirm: async () => {
+      window.hideModal('confirmModal');
+      const snapshots = targets.map(t => ({ tx: t, before: t.reason }));
+      snapshots.forEach(s => { s.tx.reason = flipDeposit(s.before, 'done'); });
+      render();
+
+      let failed = 0;
+      for (const s of snapshots) {
+        try {
+          await updateTransactionReason(s.tx.id, s.tx.reason);
+        } catch (err) {
+          s.tx.reason = s.before;
+          failed++;
+        }
+      }
+      if (failed) {
+        render();
+        showToast(`${snapshots.length - failed}건 처리, ${failed}건 실패했습니다.`, 'danger');
+      } else {
+        showToast(`${snapshots.length}건을 입금 완료로 바꿨습니다.`, 'success');
+      }
+    }
   });
 };
 
