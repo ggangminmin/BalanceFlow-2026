@@ -284,16 +284,22 @@ function Dashboard() {
 // "입근 전" 같은 오타도 잡아서 "입금 완료"로 교정한다.
 const DEPOSIT_RE = /(입금|입근)(\s*)(완료|전)/;
 
-function depositStatus(reason) {
-  const m = (reason || '').normalize('NFC').match(DEPOSIT_RE);
-  if (!m) return null;
+// 표기가 아예 없는 건도 "입금 전"으로 본다(민석: 안 적혀 있어도 아직 안 받은 것).
+// 단 0원 건("모임 없음", "점심 없음", "점심 모름")은 입금 개념이 없으니 칩을 안 단다.
+function depositStatus(t) {
+  if (!t || !t.amount) return null;
+  const m = (t.reason || '').normalize('NFC').match(DEPOSIT_RE);
+  if (!m) return 'pending';
   return m[3] === '전' ? 'pending' : 'done';
 }
 
-// 매칭된 토큰 그 자리만 치환한다. 띄어쓰기 형태는 원문 그대로 유지.
+// 표기가 있으면 그 자리만 치환(띄어쓰기 형태 유지), 없으면 끝에 붙인다. 글자를 지우지는 않는다.
 function flipDeposit(reason, to) {
   const src = (reason || '').normalize('NFC');
-  return src.replace(DEPOSIT_RE, (_, __, sp, ___) => `입금${sp}${to === 'done' ? '완료' : '전'}`);
+  if (DEPOSIT_RE.test(src)) {
+    return src.replace(DEPOSIT_RE, (_, __, sp, ___) => `입금${sp}${to === 'done' ? '완료' : '전'}`);
+  }
+  return to === 'done' ? `${src} (입금완료)`.trim() : src;
 }
 
 // 화면에서는 입금 표기를 빼고 칩으로 보여준다(원문 DB는 그대로).
@@ -318,7 +324,7 @@ function shortReason(reason) {
 }
 
 function depositChipHtml(t) {
-  const st = depositStatus(t.reason);
+  const st = depositStatus(t);
   if (!st) return '';
   return `<button class="pay-chip pay-${st}" onclick="window.toggleDeposit('${t.id}', event)"
     title="${st === 'pending' ? '클릭하면 입금 완료로 바꿉니다' : '클릭하면 입금 전으로 되돌립니다'}">${st === 'pending' ? '입금 전' : '입금 완료'}</button>`;
@@ -352,7 +358,7 @@ function TransactionList() {
   const pct = v => selSpent ? (v / selSpent * 100).toFixed(1) : 0;
   const sourceLabel = { budget: '기본예산', fee: '회비', donation: '찬조금', support: '예산지원' };
   const weekdays = ['일', '월', '화', '수', '목', '금', '토'];
-  const pendingCount = txs.filter(t => depositStatus(t.reason) === 'pending').length;
+  const pendingCount = txs.filter(t => depositStatus(t) === 'pending').length;
 
   return `
     <div class="section-head">
@@ -1292,7 +1298,7 @@ window.toggleDeposit = async (id, event) => {
   if (event) event.stopPropagation();
   const tx = state.transactions.find(t => String(t.id) === String(id));
   if (!tx) return;
-  const st = depositStatus(tx.reason);
+  const st = depositStatus(tx);
   if (!st) return;
 
   const before = tx.reason;
@@ -1315,7 +1321,7 @@ window.toggleDeposit = async (id, event) => {
 window.markMonthDeposited = (month) => {
   const monthStr = `2026-${String(month).padStart(2, '0')}`;
   const targets = state.transactions
-    .filter(t => t.date.startsWith(monthStr) && depositStatus(t.reason) === 'pending')
+    .filter(t => t.date.startsWith(monthStr) && depositStatus(t) === 'pending')
     .sort(byDateThenId);
   if (targets.length === 0) return;
 
@@ -1327,7 +1333,7 @@ window.markMonthDeposited = (month) => {
 
   openConfirm({
     title: `입금 완료 처리`,
-    message: `아래 <b>${targets.length}건</b>을 입금 완료로 바꿉니다. 금액·영수증·날짜는 그대로이고, 사유의 "입금 전" 표기만 "입금 완료"로 바뀝니다.
+    message: `<b>${month}월</b>의 아래 <b>${targets.length}건</b>만 입금 완료로 바꿉니다(다른 달은 그대로). 금액·영수증·날짜는 손대지 않고, 사유의 "입금 전" 표기만 "입금 완료"로 바뀝니다 — 표기가 없던 건은 끝에 "(입금완료)"가 붙습니다.
       <ul class="confirm-list">${list}</ul>
       <div class="confirm-total">합계 <b>₩ ${total.toLocaleString()}</b></div>`,
     actionLabel: `${targets.length}건 완료 처리`,
