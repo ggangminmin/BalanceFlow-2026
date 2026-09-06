@@ -285,9 +285,9 @@ function Dashboard() {
 const DEPOSIT_RE = /(입금|입근)(\s*)(완료|전)/;
 
 // 표기가 아예 없는 건도 "입금 전"으로 본다(민석: 안 적혀 있어도 아직 안 받은 것).
-// 단 0원 건("모임 없음", "점심 없음", "점심 모름")은 입금 개념이 없으니 칩을 안 단다.
+// 금액 0원이라고 빼지 않는다 — 9/5 점심처럼 금액을 아직 안 넣은 건도 엄연히 입금 전이다.
 function depositStatus(t) {
-  if (!t || !t.amount) return null;
+  if (!t) return null;
   const m = (t.reason || '').normalize('NFC').match(DEPOSIT_RE);
   if (!m) return 'pending';
   return m[3] === '전' ? 'pending' : 'done';
