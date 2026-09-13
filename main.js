@@ -605,35 +605,19 @@ function HalfYearSettlement() {
   `;
 }
 
-// 카톡용 상반기 결산 텍스트 — 지출 항목명은 월간 보고서와 같은 reportLabel(이름 제거)
+// 카톡용 상반기 결산 텍스트 — 핵심 숫자만(항목별 내역은 화면 상세에서 본다)
 window.copyHalfReport = () => {
   const h = halfYearStats();
-  const weekdays = ['일', '월', '화', '수', '목', '금', '토'];
   const w = (n) => `${n.toLocaleString()}원`;
-  // 월간 보고서와 같은 규칙: 0원 제외, 같은 날 같은 항목은 「점심 1 / 점심 2」
-  const list = (arr) => {
-    const items = arr.filter(t => t.amount > 0).map(t => ({ t, label: reportLabel(t.reason) }));
-    const counts = {}, seen = {};
-    items.forEach(({ t, label }) => { const k = `${t.date}|${label}`; counts[k] = (counts[k] || 0) + 1; });
-    return items.map(({ t, label }) => {
-      const [y, mo, d] = t.date.split('-').map(Number);
-      const k = `${t.date}|${label}`;
-      const name = counts[k] > 1 ? `${label} ${(seen[k] = (seen[k] || 0) + 1)}` : label;
-      return `• ${mo}/${d}(${weekdays[new Date(y, mo - 1, d).getDay()]}) ${name}: ${w(t.amount)}\n`;
-    }).join('') || '• 없음\n';
-  };
-  const sep = `\n------------------------------------\n\n`;
   const feePlain = h.fee.incomeTotal - h.fee.carryTotal;
 
   let r = `${HALF.year} 상반기 결산 (${HALF.from}~${HALF.to}월)\n\n`;
   r += `[회비]\n`;
   if (h.fee.carryTotal) r += `• 25년도 이월: ${w(h.fee.carryTotal)}\n`;
-  r += `• 회비 입금: ${w(feePlain)}\n• 지출: ${w(h.fee.spentTotal)}\n• 6월말 잔액: ${w(h.fee.left)}\n`;
-  r += `\n${list(h.fee.spent)}` + sep;
-  r += `[찬조금]\n• 입금: ${w(h.donation.incomeTotal)}\n• 지출: ${w(h.donation.spentTotal)}\n• 6월말 잔액: ${w(h.donation.left)}\n`;
-  r += `\n${list(h.donation.spent)}` + sep;
-  r += `[예산]\n• 예산: ${w(INITIAL_BUDGET)}\n• 지출: ${w(h.budget.spentTotal)}\n• 남은 예산: ${w(h.budget.left)}\n`;
-  r += `\n${list(h.budget.spent)}` + sep;
+  r += `• 회비 입금: ${w(feePlain)}\n• 지출: ${w(h.fee.spentTotal)}\n• 6월말 잔액: ${w(h.fee.left)}\n\n`;
+  r += `[찬조금]\n• 입금: ${w(h.donation.incomeTotal)}\n• 지출: ${w(h.donation.spentTotal)}\n• 6월말 잔액: ${w(h.donation.left)}\n\n`;
+  r += `[예산]\n• 예산: ${w(INITIAL_BUDGET)}\n• 지출: ${w(h.budget.spentTotal)}\n• 남은 예산: ${w(h.budget.left)}\n\n`;
+  r += `------------------------------------\n\n`;
   r += `상반기 총 지출: ${w(h.fee.spentTotal + h.donation.spentTotal + h.budget.spentTotal)}`;
 
   navigator.clipboard.writeText(r.trim()).then(() => showToast('상반기 결산이 클립보드에 복사되었습니다!', 'success'));
