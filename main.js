@@ -24,7 +24,8 @@ let state = {
   selectedMonth: new Date().getMonth() + 1,
   settlementMonth: new Date().getMonth() + 1,
   isLoading: true,
-  receipt: { txId: null, zoom: 100 }
+  receipt: { txId: null, zoom: 100 },
+  halfKey: 'H1'   // 분석 탭 반기 결산: 'H1' 상반기 / 'H2' 하반기
 };
 
 // --- Supabase Logic ---
@@ -491,44 +492,61 @@ function AnalysisView() {
   `;
 }
 
-// --- 상반기 결산 (1~6월) ---
-// 기준 = 입금일·지출일. 잔액 = 6/30까지 누계 — 월간 결산 6월 「남은 회비/찬조금」과 같은 식(보정·이체 포함).
-const HALF = { year: 2026, from: 1, to: 6 };
-const halfEnd = () => `${HALF.year}-${String(HALF.to + 1).padStart(2, '0')}-01`;
-const inHalf = (d) => d >= `${HALF.year}-${String(HALF.from).padStart(2, '0')}-01` && d < halfEnd();
+// --- 반기 결산 (상반기 1~6월 / 하반기 7~12월) ---
+// 기준 = 입금일·지출일. 잔액 = 반기 끝까지(진행 중이면 오늘까지) 누계 — 월간 결산 「남은 회비/찬조금」과 같은 식(보정·이체 포함).
+// 하반기는 6월말 잔액을 「7월초 잔액」으로 이어받는다. 통장 보정(BALANCE_ADJUST)은 날짜가 없어 상반기에 한 번만 넣고 이후엔 기초에 포함.
+const HALF_YEAR = 2026;
+const HALVES = { H1: { key: 'H1', name: '상반기', from: 1, to: 6 }, H2: { key: 'H2', name: '하반기', from: 7, to: 12 } };
+const monthStart = (m) => (m > 12 ? `${HALF_YEAR + 1}-01-01` : `${HALF_YEAR}-${String(m).padStart(2, '0')}-01`);
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const isCarryover = (m) => /이월/.test(String(m.name || '').normalize('NFC'));
 
-function halfYearStats() {
-  const end = halfEnd();
-  const txs = state.transactions.filter(t => inHalf(t.date)).sort(byDateThenId);
-  const mems = state.members.filter(m => inHalf(m.date)).sort(byDateThenId);
+function halfYearStats(key = state.halfKey) {
+  const half = HALVES[key] || HALVES.H1;
+  const start = monthStart(half.from);
+  const end = monthStart(half.to + 1);
+  const today = todayStr();
+  const inProgress = today < end;
+  const inRange = (d) => d >= start && d < end;
   const sum = (arr) => arr.reduce((s, x) => s + x.amount, 0);
+  const txs = state.transactions.filter(t => inRange(t.date)).sort(byDateThenId);
+  const mems = state.members.filter(m => inRange(m.date)).sort(byDateThenId);
   const spentOf = (src) => txs.filter(t => t.source === src);
+  const firstHalf = half.from === 1;
   const pool = (type) => {
     const income = mems.filter(m => m.type === type);
     const carry = income.filter(isCarryover);
     const spent = spentOf(type);
-    const moved = transferNet(type, end);
-    // 상반기 이전 입금은 없지만(2026 시작) 혹시 생기면 기초에 합산
-    const opening = sum(state.members.filter(m => m.type === type && m.date < `${HALF.year}-01-01`));
-    const left = opening + sum(income) - sum(spent) + BALANCE_ADJUST[type] + moved;
-    return { income, carry, spent, moved, opening, adjust: BALANCE_ADJUST[type], left,
+    const moved = transferNet(type, end) - transferNet(type, start);
+    const opening = sum(state.members.filter(m => m.type === type && m.date < start))
+      - sum(state.transactions.filter(t => t.source === type && t.date < start))
+      + transferNet(type, start) + (firstHalf ? 0 : BALANCE_ADJUST[type]);
+    const adjust = firstHalf ? BALANCE_ADJUST[type] : 0;
+    const left = opening + sum(income) - sum(spent) + adjust + moved;
+    return { income, carry, spent, moved, opening, adjust, left,
       incomeTotal: sum(income), carryTotal: sum(carry), spentTotal: sum(spent) };
   };
   const budgetSpent = spentOf('budget');
-  const months = Array.from({ length: HALF.to - HALF.from + 1 }, (_, i) => {
-    const m = HALF.from + i;
-    const key = `${HALF.year}-${String(m).padStart(2, '0')}`;
-    const mt = txs.filter(t => t.date.startsWith(key));
-    return { m, budget: sum(mt.filter(t => t.source === 'budget')), fee: sum(mt.filter(t => t.source === 'fee')), donation: sum(mt.filter(t => t.source === 'donation')) };
+  const budgetOpening = INITIAL_BUDGET - sum(state.transactions.filter(t => t.source === 'budget' && t.date < start));
+  const months = Array.from({ length: half.to - half.from + 1 }, (_, i) => {
+    const m = half.from + i;
+    const mt = txs.filter(t => t.date.startsWith(monthStart(m).slice(0, 7)));
+    return { m, future: monthStart(m) > today,
+      budget: sum(mt.filter(t => t.source === 'budget')), fee: sum(mt.filter(t => t.source === 'fee')), donation: sum(mt.filter(t => t.source === 'donation')) };
   });
+  const [, tm, td] = today.split('-').map(Number);
   return {
+    half, firstHalf, inProgress, asOf: `${tm}/${td}`,
+    openLabel: `${half.from}월초 잔액`,
+    leftLabel: inProgress ? `현재 잔액 (${tm}/${td})` : `${half.to}월말 잔액`,
     txs, fee: pool('fee'), donation: pool('donation'),
-    budget: { spent: budgetSpent, spentTotal: sum(budgetSpent), left: INITIAL_BUDGET - sum(budgetSpent) },
+    budget: { spent: budgetSpent, spentTotal: sum(budgetSpent), opening: budgetOpening, left: budgetOpening - sum(budgetSpent) },
     support: spentOf('support'), months,
   };
 }
+
+window.setHalf = (key) => { state.halfKey = key; render(); };
 
 function HalfYearSettlement() {
   const h = halfYearStats();
@@ -536,29 +554,38 @@ function HalfYearSettlement() {
   const md = (d) => { const [, mo, da] = d.split('-').map(Number); return `${mo}/${da}`; };
   const rows = (list, nameOf) => list.length
     ? list.map(x => `<div class="half-line"><span class="half-date">${md(x.date)}</span><span class="half-name">${escapeHtml(nameOf(x))}</span><span class="half-amt">${x.amount.toLocaleString()}</span></div>`).join('')
-    : `<div class="half-line"><span class="half-name" style="color:var(--ink-48)">내역 없음</span></div>`;
+    : `<div class="half-line"><span class="half-name" style="color:var(--ink-48);grid-column:1 / -1">내역 없음</span></div>`;
   const totalSpent = h.fee.spentTotal + h.donation.spentTotal + h.budget.spentTotal;
   const monthTotal = (r) => r.budget + r.fee + r.donation;
+  const movedNote = (p) => (p.moved ? `<small>이체 ${p.moved > 0 ? '+' : ''}${p.moved.toLocaleString()}</small>` : '');
+  const open = !h.firstHalf; // 하반기만 「7월초 잔액」 칸
+  const openTd = (v) => (open ? `<td data-label="${h.openLabel}">${won(v)}</td>` : '');
+  const lastDay = h.half.to === 6 ? 30 : 31;
+  const period = h.inProgress
+    ? `${h.half.from}월 1일 – ${h.asOf} 진행 중 · 월이 지나면 자동으로 채워짐`
+    : `${h.half.from}월 1일 – ${h.half.to}월 ${lastDay}일`;
+  const tab = (k) => `<button class="filter-chip ${h.half.key === k ? 'active' : ''}" onclick="window.setHalf('${k}')">${HALVES[k].name}</button>`;
 
   return `
     <div class="glass stat-card half-card">
       <div class="half-head">
         <div>
-          <h3>${HALF.year} 상반기 결산</h3>
-          <span class="hint" style="margin-top:4px;display:block">${HALF.from}월 1일 – ${HALF.to}월 30일 · 입금일·지출일 기준 · 예산지원(증빙 전용) 제외</span>
+          <div class="half-tabs">${tab('H1')}${tab('H2')}</div>
+          <h3>${HALF_YEAR} ${h.half.name} 결산${h.inProgress ? ' <span class="half-badge">진행 중</span>' : ''}</h3>
+          <span class="hint" style="margin-top:4px;display:block">${period} · 입금일·지출일 기준 · 예산지원(증빙 전용) 제외</span>
         </div>
         <button class="btn btn-ghost btn-sm" onclick="window.copyHalfReport()">결산 복사</button>
       </div>
 
       <div class="half-table-wrap">
-        <table class="half-table half-summary">
-          <thead><tr><th>구분</th><th>수입</th><th>지출</th><th>6월말 잔액</th></tr></thead>
+        <table class="half-table half-summary${open ? ' has-open' : ''}">
+          <thead><tr><th>구분</th>${open ? `<th>${h.openLabel}</th>` : ''}<th>수입</th><th>지출</th><th>${h.leftLabel}</th></tr></thead>
           <tbody>
-            <tr><td>회비</td><td data-label="수입">${won(h.fee.incomeTotal)}${h.fee.carryTotal ? `<small>이월 ${h.fee.carryTotal.toLocaleString()} 포함</small>` : ''}</td><td data-label="지출">${won(h.fee.spentTotal)}<small>${h.fee.spent.length}건</small></td><td data-label="6월말 잔액"><b>${won(h.fee.left)}</b>${h.fee.adjust ? `<small>통장 보정 +${h.fee.adjust.toLocaleString()} 포함</small>` : ''}${h.fee.moved ? `<small>이체 ${h.fee.moved > 0 ? '+' : ''}${h.fee.moved.toLocaleString()}</small>` : ''}</td></tr>
-            <tr><td>찬조금</td><td data-label="수입">${won(h.donation.incomeTotal)}</td><td data-label="지출">${won(h.donation.spentTotal)}<small>${h.donation.spent.length}건</small></td><td data-label="6월말 잔액"><b>${won(h.donation.left)}</b>${h.donation.moved ? `<small>이체 ${h.donation.moved > 0 ? '+' : ''}${h.donation.moved.toLocaleString()}</small>` : ''}</td></tr>
-            <tr><td>기본예산</td><td data-label="예산">${won(INITIAL_BUDGET)}</td><td data-label="지출">${won(h.budget.spentTotal)}<small>${h.budget.spent.length}건</small></td><td data-label="6월말 잔액"><b>${won(h.budget.left)}</b></td></tr>
+            <tr><td>회비</td>${openTd(h.fee.opening)}<td data-label="수입">${won(h.fee.incomeTotal)}${h.fee.carryTotal ? `<small>이월 ${h.fee.carryTotal.toLocaleString()} 포함</small>` : ''}</td><td data-label="지출">${won(h.fee.spentTotal)}<small>${h.fee.spent.length}건</small></td><td data-label="${h.leftLabel}"><b>${won(h.fee.left)}</b>${h.fee.adjust ? `<small>통장 보정 +${h.fee.adjust.toLocaleString()} 포함</small>` : ''}${movedNote(h.fee)}</td></tr>
+            <tr><td>찬조금</td>${openTd(h.donation.opening)}<td data-label="수입">${won(h.donation.incomeTotal)}</td><td data-label="지출">${won(h.donation.spentTotal)}<small>${h.donation.spent.length}건</small></td><td data-label="${h.leftLabel}"><b>${won(h.donation.left)}</b>${movedNote(h.donation)}</td></tr>
+            <tr><td>기본예산</td>${open ? `${openTd(h.budget.opening)}<td data-label="수입">–</td>` : `<td data-label="예산">${won(INITIAL_BUDGET)}</td>`}<td data-label="지출">${won(h.budget.spentTotal)}<small>${h.budget.spent.length}건</small></td><td data-label="${h.leftLabel}"><b>${won(h.budget.left)}</b></td></tr>
           </tbody>
-          <tfoot><tr><td>합계</td><td class="half-empty"></td><td data-label="총 지출">${won(totalSpent)}</td><td class="half-empty"></td></tr></tfoot>
+          <tfoot><tr><td>합계</td>${open ? '<td class="half-empty"></td>' : ''}<td class="half-empty"></td><td data-label="총 지출">${won(totalSpent)}</td><td class="half-empty"></td></tr></tfoot>
         </table>
       </div>
 
@@ -570,7 +597,9 @@ function HalfYearSettlement() {
         <div class="half-table-wrap">
           <table class="half-table half-months">
             <thead><tr><th>월</th><th>회비</th><th>찬조금</th><th>예산</th><th>합계</th></tr></thead>
-            <tbody>${h.months.map(r => `<tr><td>${r.m}월</td><td>${r.fee.toLocaleString()}</td><td>${r.donation.toLocaleString()}</td><td>${r.budget.toLocaleString()}</td><td><b>${monthTotal(r).toLocaleString()}</b></td></tr>`).join('')}</tbody>
+            <tbody>${h.months.map(r => r.future
+              ? `<tr class="half-future"><td>${r.m}월</td><td>–</td><td>–</td><td>–</td><td>–</td></tr>`
+              : `<tr><td>${r.m}월</td><td>${r.fee.toLocaleString()}</td><td>${r.donation.toLocaleString()}</td><td>${r.budget.toLocaleString()}</td><td><b>${monthTotal(r).toLocaleString()}</b></td></tr>`).join('')}</tbody>
           </table>
         </div>
       </div>
@@ -605,22 +634,28 @@ function HalfYearSettlement() {
   `;
 }
 
-// 카톡용 상반기 결산 텍스트 — 핵심 숫자만(항목별 내역은 화면 상세에서 본다)
+// 카톡용 반기 결산 텍스트 — 핵심 숫자만(항목별 내역은 화면 상세에서 본다)
 window.copyHalfReport = () => {
   const h = halfYearStats();
   const w = (n) => `${n.toLocaleString()}원`;
-  const feePlain = h.fee.incomeTotal - h.fee.carryTotal;
+  const leftName = h.inProgress ? `현재 잔액` : `${h.half.to}월말 잔액`;
+  const title = `${HALF_YEAR} ${h.half.name} 결산 (${h.half.from}~${h.half.to}월${h.inProgress ? `, ${h.asOf} 기준` : ''})`;
 
-  let r = `${HALF.year} 상반기 결산 (${HALF.from}~${HALF.to}월)\n\n`;
+  let r = `${title}\n\n`;
   r += `[회비]\n`;
+  if (!h.firstHalf) r += `• ${h.openLabel}: ${w(h.fee.opening)}\n`;
   if (h.fee.carryTotal) r += `• 25년도 이월: ${w(h.fee.carryTotal)}\n`;
-  r += `• 회비 입금: ${w(feePlain)}\n• 지출: ${w(h.fee.spentTotal)}\n• 6월말 잔액: ${w(h.fee.left)}\n\n`;
-  r += `[찬조금]\n• 입금: ${w(h.donation.incomeTotal)}\n• 지출: ${w(h.donation.spentTotal)}\n• 6월말 잔액: ${w(h.donation.left)}\n\n`;
-  r += `[예산]\n• 예산: ${w(INITIAL_BUDGET)}\n• 지출: ${w(h.budget.spentTotal)}\n• 남은 예산: ${w(h.budget.left)}\n\n`;
+  r += `• 회비 입금: ${w(h.fee.incomeTotal - h.fee.carryTotal)}\n• 지출: ${w(h.fee.spentTotal)}\n• ${leftName}: ${w(h.fee.left)}\n\n`;
+  r += `[찬조금]\n`;
+  if (!h.firstHalf) r += `• ${h.openLabel}: ${w(h.donation.opening)}\n`;
+  r += `• 입금: ${w(h.donation.incomeTotal)}\n• 지출: ${w(h.donation.spentTotal)}\n• ${leftName}: ${w(h.donation.left)}\n\n`;
+  r += `[예산]\n`;
+  r += h.firstHalf ? `• 예산: ${w(INITIAL_BUDGET)}\n` : `• ${h.openLabel}: ${w(h.budget.opening)}\n`;
+  r += `• 지출: ${w(h.budget.spentTotal)}\n• 남은 예산: ${w(h.budget.left)}\n\n`;
   r += `------------------------------------\n\n`;
-  r += `상반기 총 지출: ${w(h.fee.spentTotal + h.donation.spentTotal + h.budget.spentTotal)}`;
+  r += `${h.half.name} 총 지출: ${w(h.fee.spentTotal + h.donation.spentTotal + h.budget.spentTotal)}`;
 
-  navigator.clipboard.writeText(r.trim()).then(() => showToast('상반기 결산이 클립보드에 복사되었습니다!', 'success'));
+  navigator.clipboard.writeText(r.trim()).then(() => showToast(`${h.half.name} 결산이 클립보드에 복사되었습니다!`, 'success'));
 };
 
 function SettlementView() {
@@ -1766,12 +1801,12 @@ function initCharts() {
     });
   }
 
-  // 상반기 결산: 1~6월 출처별 누적 막대 (색 = 도넛과 같은 블루 틴트)
+  // 반기 결산: 선택한 반기 월별 출처별 누적 막대(아직 안 온 달은 빈 칸) (색 = 도넛과 같은 블루 틴트)
   const ctxHalf = document.getElementById('halfChart')?.getContext('2d');
   if (ctxHalf) {
     const hm = halfYearStats().months;
     const ds = [['기본예산', 'budget', '#0066cc'], ['회비', 'fee', '#6fb1f2'], ['찬조금', 'donation', '#cfe3fa']]
-      .map(([label, key, color]) => ({ label, data: hm.map(r => r[key]), backgroundColor: color, borderWidth: 0, borderRadius: 4 }));
+      .map(([label, key, color]) => ({ label, data: hm.map(r => (r.future ? null : r[key])), backgroundColor: color, borderWidth: 0, borderRadius: 4 }));
     new Chart(ctxHalf, {
       type: 'bar',
       data: { labels: hm.map(r => `${r.m}월`), datasets: ds },

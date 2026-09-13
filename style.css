@@ -1430,3 +1430,16 @@ input[type="file"].form-input::file-selector-button {
   .half-summary tfoot td { border: none; }
   .half-summary .half-empty { display: none; }
 }
+
+/* 반기 전환(상반기/하반기) · 진행 중 배지 · 아직 안 온 달 */
+.half-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.half-badge {
+  display: inline-block; vertical-align: middle; margin-left: 6px; padding: 2px 10px;
+  border-radius: var(--pill); border: 1px solid var(--primary); color: var(--primary);
+  font-size: 12px; font-weight: 400; letter-spacing: -0.12px;
+}
+.half-future td { color: var(--ink-48); }
+
+@media (max-width: 600px) {
+  .half-summary.has-open tr { grid-template-columns: repeat(2, 1fr); }
+}
