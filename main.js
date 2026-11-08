@@ -1074,6 +1074,43 @@ function render() {
   });
 }
 
+// --- 영수증 압축: DB 용량 초과(2026-11 무료 한도) 재발 방지 ---
+// 긴 변 1600px · JPEG 0.75 로 줄여 저장. 이미지가 아니거나 디코딩 실패(HEIC 등)면 원본 그대로.
+const RECEIPT_MAX_SIDE = 1600;
+const RECEIPT_QUALITY = 0.75;
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function compressReceipt(file) {
+  const original = await readAsDataURL(file);
+  if (!file.type.startsWith('image/')) return original;
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = reject;
+      el.src = original;
+    });
+    const scale = Math.min(1, RECEIPT_MAX_SIDE / Math.max(img.width, img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const out = canvas.toDataURL('image/jpeg', RECEIPT_QUALITY);
+    return out.length < original.length ? out : original;
+  } catch {
+    return original;
+  }
+}
+
 // --- Event Handlers ---
 
 async function handleTransactionSubmit(e) {
@@ -1083,12 +1120,7 @@ async function handleTransactionSubmit(e) {
   let receipts = [];
   if (files.length > 0) {
     for (let file of Array.from(files).slice(0, 5)) {
-      const reader = new FileReader();
-      const promise = new Promise(resolve => {
-        reader.onload = (e) => resolve(e.target.result);
-        reader.readAsDataURL(file);
-      });
-      receipts.push(await promise);
+      receipts.push(await compressReceipt(file));
     }
   }
 

@@ -30,3 +30,4 @@ dist
 
 # local backups (never commit — receipts are private)
 _backup/
+_scripts/
