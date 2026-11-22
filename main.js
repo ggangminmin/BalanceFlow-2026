@@ -245,8 +245,9 @@ function Header() {
 
 function Dashboard() {
   const stats = calculateCurrentStats();
-  // 2026-11-22 민석: 예산이 내 계좌에 있어 분리 의미가 없다 → 잔여 회비·찬조금을 예산 잔액에 합쳐 한 칸으로 보여 준다.
-  const mergedBudget = stats.currentBudget + stats.currentFee + stats.currentDonation;
+  // 2026-11-22 민석: 예산이 내 계좌에 있어 분리 의미가 없다 → 잔여 찬조금을 예산 잔액에 합쳐 한 칸으로 보여 준다.
+  // 잔여 회비(8,280원)는 민석 지시로 합계에서 뺀다(통장에 없는 돈).
+  const mergedBudget = stats.currentBudget + stats.currentDonation;
   const budgetProgress = Math.max(0, Math.min(100, (mergedBudget / INITIAL_BUDGET) * 100));
 
   return `
@@ -257,7 +258,7 @@ function Dashboard() {
         <div class="progress-container">
           <div class="progress-bar" style="width: ${budgetProgress}%"></div>
         </div>
-        <span class="stat-sub" style="margin-top: 8px; display: block;">잔여 회비 ${stats.currentFee.toLocaleString()}원 · 찬조금 ${stats.currentDonation.toLocaleString()}원 포함</span>
+        <span class="stat-sub" style="margin-top: 8px; display: block;">잔여 찬조금 ${stats.currentDonation.toLocaleString()}원 포함</span>
       </div>
 
       <div class="glass stat-card">
