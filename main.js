@@ -245,29 +245,19 @@ function Header() {
 
 function Dashboard() {
   const stats = calculateCurrentStats();
-  const budgetProgress = Math.max(0, (stats.currentBudget / INITIAL_BUDGET) * 100);
+  // 2026-11-22 민석: 예산이 내 계좌에 있어 분리 의미가 없다 → 잔여 회비·찬조금을 예산 잔액에 합쳐 한 칸으로 보여 준다.
+  const mergedBudget = stats.currentBudget + stats.currentFee + stats.currentDonation;
+  const budgetProgress = Math.max(0, Math.min(100, (mergedBudget / INITIAL_BUDGET) * 100));
 
   return `
     <div class="dashboard-grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
       <div class="glass stat-card">
         <span class="stat-label">2026 총 예산 잔액</span>
-        <div class="stat-value">₩ ${stats.currentBudget.toLocaleString()}</div>
+        <div class="stat-value">₩ ${mergedBudget.toLocaleString()}</div>
         <div class="progress-container">
           <div class="progress-bar" style="width: ${budgetProgress}%"></div>
         </div>
-        <span class="stat-sub" style="margin-top: 8px; display: block;">기본 예산 3,200,000원 기준</span>
-      </div>
-      
-      <div class="glass stat-card">
-        <span class="stat-label">잔여 회비</span>
-        <div class="stat-value">₩ ${stats.currentFee.toLocaleString()}</div>
-        <div class="stat-sub">회비 풀 (Pool) 합계</div>
-      </div>
-
-      <div class="glass stat-card">
-        <span class="stat-label">잔여 찬조금</span>
-        <div class="stat-value">₩ ${stats.currentDonation.toLocaleString()}</div>
-        <div class="stat-sub">찬조금 풀 (Pool) 합계</div>
+        <span class="stat-sub" style="margin-top: 8px; display: block;">잔여 회비 ${stats.currentFee.toLocaleString()}원 · 찬조금 ${stats.currentDonation.toLocaleString()}원 포함</span>
       </div>
 
       <div class="glass stat-card">
